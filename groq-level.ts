@@ -1,3 +1,4 @@
+// api/groq-level.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
@@ -8,13 +9,36 @@ const ORIGINS = new Set([
   "http://localhost:5173",
 ]);
 
-const deaccent = (s: string) =>
-  s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+const deaccent = (s: string) => s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
 const toks = (s: string) =>
   deaccent(s.toLowerCase()).match(/[a-záéíóúñü]+/gi) ?? [];
 
 let BANK_CACHE: Record<string, Set<string>> = {};
 let CEFR_CACHE: Record<string, Record<string, string>> = {};
+
+function levelToCount(level: string): number {
+  const n = parseInt(level, 10);
+  if (!Number.isFinite(n) || n <= 0) return 1000;
+  return n >= 1000 ? n : n * 1000;
+}
+
+function numericToCefr(level: string): string {
+  const map: Record<string, string> = {
+    "1": "A1",
+    "2": "A2",
+    "3": "B1",
+    "4": "B2",
+    "5": "C1",
+    "1000": "A1",
+    "2000": "A2",
+    "3000": "B1",
+    "4000": "B2",
+    "5000": "C1",
+  };
+  return map[level] || "";
+}
+
+const CUMULATIVE = true;
 
 function cors(origin = "") {
   return {
@@ -35,16 +59,6 @@ async function loadJSON<T = any>(url: string): Promise<T> {
   return (await r.json()) as T;
 }
 
-async function loadBank(lang: string, level: string) {
-  const key = `${lang}:${level}`;
-  if (BANK_CACHE[key]) return BANK_CACHE[key];
-  const arr = await loadJSON<string[]>(
-    `https://pollylang.app/wordbanks/${lang}/${level}.json`
-  );
-  BANK_CACHE[key] = new Set(arr);
-  return BANK_CACHE[key];
-}
-
 async function loadCefr(lang: string) {
   if (CEFR_CACHE[lang]) return CEFR_CACHE[lang];
   CEFR_CACHE[lang] = await loadJSON<Record<string, string>>(
@@ -53,11 +67,29 @@ async function loadCefr(lang: string) {
   return CEFR_CACHE[lang];
 }
 
-function chooseSlice(
-  full: Set<string>,
-  topicWords: string[] | null,
-  n = 180
-) {
+async function loadOneBank(lang: string, count: number): Promise<Set<string>> {
+  const key = `${lang}:${count}`;
+  if (BANK_CACHE[key]) return BANK_CACHE[key];
+  const arr = await loadJSON<string[]>(
+    `https://pollylang.app/wordbanks/${lang}/${lang}_${count}.json`
+  );
+  BANK_CACHE[key] = new Set(arr.map((w) => deaccent(w.toLowerCase())));
+  return BANK_CACHE[key];
+}
+
+async function loadBank(lang: string, level: string): Promise<Set<string>> {
+  const count = levelToCount(level);
+  if (!CUMULATIVE) return loadOneBank(lang, count);
+
+  const union = new Set<string>();
+  for (let k = 1000; k <= count; k += 1000) {
+    const set = await loadOneBank(lang, k);
+    for (const w of set) union.add(w);
+  }
+  return union;
+}
+
+function chooseSlice(full: Set<string>, topicWords: string[] | null, n = 200) {
   const slice: string[] = [];
   if (topicWords)
     for (const w of topicWords) if (full.has(w) && slice.length < n) slice.push(w);
@@ -93,14 +125,13 @@ async function groqCall(system: string, user: string, key: string) {
   if (!r.ok) throw new Error(await r.text());
   const data: any = await r.json();
   let text = (data?.choices?.[0]?.message?.content || "").trim();
-  if (text.length > 60) text = text.slice(0, 60);
+  if (text.length > 150) text = text.slice(0, 150);
   return text;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const rawOrigin = req.headers.origin;
-  const origin =
-    (Array.isArray(rawOrigin) ? rawOrigin[0] : rawOrigin) || "";
+  const origin = (Array.isArray(rawOrigin) ? rawOrigin[0] : rawOrigin) || "";
   const headers = cors(origin);
 
   if (req.method === "OPTIONS") {
@@ -114,46 +145,66 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const {
-      persona = "María, teen from Madrid who loves art and padel.",
-      language = "Spanish",
-      langCode = "es",
-      level = "A1", // "A1"|"A2"|"B1"|"B2"|"C1"
+      persona,
+      language,
+      langCode,
+      level = "1",
       topic = "",
       user = "Greet the player.",
     } = (req.body || {}) as Record<string, string>;
 
+    // Validate required fields
+    if (!persona || !language || !langCode) {
+      applyHeaders(res, headers);
+      return res.status(400).json({ error: "Missing required fields: persona, language, langCode" });
+    }
+
     const key = process.env.GROQ_API_KEY!;
-    const cefr = await loadCefr(langCode);
-    const levelRule = cefr[level] || "";
     const full = await loadBank(langCode, level);
+
+    // Load CEFR guidance if available
+    const cefrLevel = numericToCefr(level) || level;
+    let levelRule = "";
+    try {
+      const cefrData = await loadCefr(langCode);
+      levelRule = cefrData[cefrLevel] || "";
+    } catch {
+      levelRule = "";
+    }
 
     const topicArr = topic ? toks(topic).filter((t) => full.has(t)) : [];
     const slice = chooseSlice(full, topicArr, 200);
 
     const system =
       `You are ${persona}. Speak only ${language}. ` +
-      `CEFR ${level}: ${levelRule} ` +
-      `Use ONLY BANK words when possible; paraphrase to stay in level. ` +
-      `One sentence, <=60 chars. No emojis/quotes/prefixes. Stay in character.`;
+      (levelRule ? `${levelRule} ` : "") +
+      `Prefer using only the BANK vocabulary for Level ${level} (${cefrLevel || "no CEFR"}). ` +
+      `If a key word is missing, you may use simple outside words sparingly. ` +
+      `Keep to one sentence, <=150 characters. No emojis/quotes/prefixes. Stay in character.`;
 
-    const userMsg = `BANK: ${slice.join(", ")}
-TOPIC: ${topic}
-PLAYER: ${user}`;
+    const userMsg =
+      `BANK (Level ${level}): ${slice.join(", ")}\n` +
+      `TOPIC: ${topic}\n` +
+      `PLAYER: ${user}`;
 
     let text = await groqCall(system, userMsg, key);
-    let bad = oov(text, full);
 
-    if (bad.length) {
-      const fix = `Rewrite without: ${bad.join(
-        ", "
-      )}. Use only BANK words. Keep meaning.`;
+    // Soft constraint: only rewrite if >30% OOV
+    const tokens = toks(text);
+    let bad = oov(text, full);
+    const oovRatio = tokens.length ? bad.length / tokens.length : 0;
+
+    if (oovRatio > 0.30) {
+      const fix =
+        `Rewrite using mainly BANK words. Replace outside words (${bad.join(
+          ", "
+        )}) with close BANK synonyms when possible. Keep meaning.`;
       text = await groqCall(
         system,
-        `BANK: ${slice.join(", ")}\n${fix}\nOriginal: ${text}`,
+        `BANK (Level ${level}): ${slice.join(", ")}\n${fix}\nOriginal: ${text}`,
         key
       );
-      bad = oov(text, full);
-      if (bad.length) text = "¿Puedes decirlo de otra forma?";
+      if (text.length > 150) text = text.slice(0, 150);
     }
 
     applyHeaders(res, headers);
