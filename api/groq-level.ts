@@ -16,12 +16,16 @@ const toks = (s: string) =>
 let BANK_CACHE: Record<string, Set<string>> = {};
 let CEFR_CACHE: Record<string, Record<string, string>> = {};
 
+// ---------- helpers ----------
+
+// numeric "1|2|3…" => 1000, 2000…
 function levelToCount(level: string): number {
   const n = parseInt(level, 10);
   if (!Number.isFinite(n) || n <= 0) return 1000;
   return n >= 1000 ? n : n * 1000;
 }
 
+// numeric to CEFR (optional guidance file)
 function numericToCefr(level: string): string {
   const map: Record<string, string> = {
     "1": "A1",
@@ -36,6 +40,17 @@ function numericToCefr(level: string): string {
     "5000": "C1",
   };
   return map[level] || "";
+}
+
+// pull a clean display name from `persona`
+function extractPersonaName(persona: string): string {
+  // Try before the first comma/sentence break; fallback to first word.
+  const firstClause = persona.split(/[,\.\n]/)[0]?.trim() || persona.trim();
+  // Strip leading role words like "Soy", quotes, etc.
+  const cleaned = firstClause.replace(/^"(.*)"$/, "$1").replace(/^(soy|i am)\s+/i, "").trim();
+  // If there are multiple words, keep the first token as a name guess
+  const name = cleaned.split(/\s+/)[0] || "Personaje";
+  return name;
 }
 
 const CUMULATIVE = true;
@@ -70,6 +85,7 @@ async function loadCefr(lang: string) {
 async function loadOneBank(lang: string, count: number): Promise<Set<string>> {
   const key = `${lang}:${count}`;
   if (BANK_CACHE[key]) return BANK_CACHE[key];
+  // expects /public/wordbanks/es/es_1000.json, es_2000.json, ...
   const arr = await loadJSON<string[]>(
     `https://pollylang.app/wordbanks/${lang}/${lang}_${count}.json`
   );
@@ -129,6 +145,8 @@ async function groqCall(system: string, user: string, key: string) {
   return text;
 }
 
+// ---------- handler ----------
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const rawOrigin = req.headers.origin;
   const origin = (Array.isArray(rawOrigin) ? rawOrigin[0] : rawOrigin) || "";
@@ -145,24 +163,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const {
-      persona,
-      language,
-      langCode,
-      level = "1",
+      persona = "María, teen from Madrid who loves art and padel.",
+      language = "Spanish",
+      langCode = "es",
+      level = "1", // numeric or CEFR-like
       topic = "",
       user = "Greet the player.",
     } = (req.body || {}) as Record<string, string>;
 
-    // Validate required fields
-    if (!persona || !language || !langCode) {
-      applyHeaders(res, headers);
-      return res.status(400).json({ error: "Missing required fields: persona, language, langCode" });
-    }
-
     const key = process.env.GROQ_API_KEY!;
     const full = await loadBank(langCode, level);
 
-    // Load CEFR guidance if available
+    // Optional CEFR guidance
     const cefrLevel = numericToCefr(level) || level;
     let levelRule = "";
     try {
@@ -175,12 +187,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const topicArr = topic ? toks(topic).filter((t) => full.has(t)) : [];
     const slice = chooseSlice(full, topicArr, 200);
 
+    // identity lock
+    const npcName = extractPersonaName(persona);
+
     const system =
-      `You are ${persona}. Speak only ${language}. ` +
+      `You are ${persona}. ` +
+      // identity instructions (language-agnostic phrasing)
+      `Your fixed personal name is "${npcName}". ` +
+      `If the player asks who you are, your name, or "what are you called", clearly say your name (e.g., "Me llamo ${npcName}", "Soy ${npcName}", or the correct equivalent in ${language}). ` +
+      `Never answer with only a pronoun like "yo/ella/él" instead of your name. ` +
+      `Speak only ${language}. ` +
       (levelRule ? `${levelRule} ` : "") +
       `Prefer using only the BANK vocabulary for Level ${level} (${cefrLevel || "no CEFR"}). ` +
       `If a key word is missing, you may use simple outside words sparingly. ` +
-      `Keep to one sentence, <=150 characters. No emojis/quotes/prefixes. Stay in character.`;
+      `One sentence, <=150 characters. No emojis/quotes/prefixes. Stay in character.`;
 
     const userMsg =
       `BANK (Level ${level}): ${slice.join(", ")}\n` +
