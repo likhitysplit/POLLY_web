@@ -1,25 +1,23 @@
-import { SignJWT, jwtVerify } from "jose";
-
 const ALG = "HS256";
 const COOKIE = "pl_session";
 const days = (n: number) => n * 24 * 60 * 60;
 
 export async function makeSessionCookie(userId: string, secret: string) {
+  const { SignJWT } = await import("jose");
   const token = await new SignJWT({ uid: userId })
     .setProtectedHeader({ alg: ALG })
     .setIssuedAt()
     .setExpirationTime("30d")
     .sign(new TextEncoder().encode(secret));
 
-  const cookie = [
+  return [
     `${COOKIE}=${token}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    "Max-Age=" + days(30),
+    `Max-Age=${days(30)}`,
     "Secure"
   ].join("; ");
-  return cookie;
 }
 
 export async function readSession(req: any, secret: string): Promise<string | null> {
@@ -32,12 +30,16 @@ export async function readSession(req: any, secret: string): Promise<string | nu
   }
   const token = dict[COOKIE];
   if (!token) return null;
+
   try {
+    const { jwtVerify } = await import("jose");
     const { payload } = await jwtVerify(token, new TextEncoder().encode(secret));
     return (payload as any).uid as string;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export function clearCookie() {
-  return `pl_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure`;
+  return `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure`;
 }
