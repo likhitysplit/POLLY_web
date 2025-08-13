@@ -1,17 +1,16 @@
-// api/_lib/session.ts
-import { loadJose } from "./jose";
+import { SignJWT, jwtVerify } from "jose-node-cjs-runtime";
 
 const ALG = "HS256";
 const COOKIE = "pl_session";
 const days = (n: number) => n * 24 * 60 * 60;
 
 export async function makeSessionCookie(userId: string, secret: string) {
-  const { SignJWT } = await loadJose();
   const token = await new SignJWT({ uid: userId })
     .setProtectedHeader({ alg: ALG })
     .setIssuedAt()
     .setExpirationTime("30d")
     .sign(new TextEncoder().encode(secret));
+
   return [
     `${COOKIE}=${token}`,
     "Path=/",
@@ -22,7 +21,7 @@ export async function makeSessionCookie(userId: string, secret: string) {
   ].join("; ");
 }
 
-export async function readSession(req: any, secret: string) {
+export async function readSession(req: any, secret: string): Promise<string | null> {
   const raw = (req.headers.cookie || "") as string;
   const dict: Record<string, string> = {};
   for (const part of raw.split(";")) {
@@ -33,10 +32,11 @@ export async function readSession(req: any, secret: string) {
   if (!token) return null;
 
   try {
-    const { jwtVerify } = await loadJose();
     const { payload } = await jwtVerify(token, new TextEncoder().encode(secret));
     return (payload as any).uid as string;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export function clearCookie() {
