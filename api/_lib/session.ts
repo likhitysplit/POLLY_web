@@ -1,49 +1,44 @@
+// api/_lib/session.ts
+import { loadJose } from "./jose";
+
 const ALG = "HS256";
 const COOKIE = "pl_session";
 const days = (n: number) => n * 24 * 60 * 60;
 
-// Create session cookie
 export async function makeSessionCookie(userId: string, secret: string) {
-  const { SignJWT } = await import("jose"); // dynamic import fixes ESM issue
+  const { SignJWT } = await loadJose();
   const token = await new SignJWT({ uid: userId })
     .setProtectedHeader({ alg: ALG })
     .setIssuedAt()
     .setExpirationTime("30d")
     .sign(new TextEncoder().encode(secret));
-
-  const cookie = [
+  return [
     `${COOKIE}=${token}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    "Max-Age=" + days(30),
+    `Max-Age=${days(30)}`,
     "Secure"
   ].join("; ");
-  return cookie;
 }
 
-// Read session cookie
-export async function readSession(req: any, secret: string): Promise<string | null> {
+export async function readSession(req: any, secret: string) {
   const raw = (req.headers.cookie || "") as string;
   const dict: Record<string, string> = {};
   for (const part of raw.split(";")) {
-    const [k, ...rest] = part.trim().split("=");
-    if (!k) continue;
+    const [k, ...rest] = part.trim().split("="); if (!k) continue;
     dict[decodeURIComponent(k)] = decodeURIComponent(rest.join("="));
   }
   const token = dict[COOKIE];
   if (!token) return null;
 
-  const { jwtVerify } = await import("jose"); // also dynamic here
   try {
+    const { jwtVerify } = await loadJose();
     const { payload } = await jwtVerify(token, new TextEncoder().encode(secret));
     return (payload as any).uid as string;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-// Clear session cookie
 export function clearCookie() {
   return `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure`;
 }
