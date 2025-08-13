@@ -1,8 +1,10 @@
 {
   "dependencies": {
-    "@vercel/node": "^5.3.11"
+    "@vercel/node": "^5.3.11",
+    "jose": "^6.0.12"
   },
   "devDependencies": {
-    "@types/node": "^24.2.1"
+    "@types/node": "^24.2.1",
+    "typescript": "^5.9.2"
   }
 }
