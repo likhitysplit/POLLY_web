@@ -12,8 +12,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   apply(res, headers);
 
   const { username, email, password, characterName } = (req.body || {}) as Record<string, string>;
-  if (!username || !email || !password || !characterName) return res.status(400).json({ error: "Missing fields" });
-  if (!/^[a-z0-9_.]{3,32}$/i.test(username)) return res.status(400).json({ error: "Invalid username" });
+  if (!username || !email || !password || !characterName) {
+    return res.status(400).json({ error: "Missing fields" });
+  }
+  if (!/^[a-z0-9_.]{3,32}$/i.test(username)) {
+    return res.status(400).json({ error: "Invalid username" });
+  }
 
   const supaUrl = process.env.SUPABASE_URL!;
   const supaKey = process.env.SUPABASE_SERVICE_ROLE!;
@@ -23,12 +27,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   {
     const r = await dbQuery(supaUrl, supaKey, `/rest/v1/users_auth?username=eq.${encodeURIComponent(username)}&select=id`);
     if (!r.ok) return res.status(502).json({ error: await r.text() });
-    const arr = await r.json(); if (arr.length) return res.status(409).json({ error: "Username already taken" });
+    const arr = await r.json(); 
+    if (arr.length) return res.status(409).json({ error: "Username already taken" });
   }
   {
     const r = await dbQuery(supaUrl, supaKey, `/rest/v1/users_auth?email=eq.${encodeURIComponent(email)}&select=id`);
     if (!r.ok) return res.status(502).json({ error: await r.text() });
-    const arr = await r.json(); if (arr.length) return res.status(409).json({ error: "Email already in use" });
+    const arr = await r.json(); 
+    if (arr.length) return res.status(409).json({ error: "Email already in use" });
   }
 
   const pass_hash = await hashPassword(password);
@@ -41,7 +47,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!ins.ok) return res.status(502).json({ error: await ins.text() });
   const [row] = await ins.json();
 
+  // FIX: jose dynamic import inside function to avoid ERR_REQUIRE_ESM
   const cookie = await makeSessionCookie(row.id, secret);
   res.setHeader("Set-Cookie", cookie);
+
   return res.status(200).json({ userId: row.id });
 }

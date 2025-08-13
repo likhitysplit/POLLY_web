@@ -2,24 +2,27 @@ const ALG = "HS256";
 const COOKIE = "pl_session";
 const days = (n: number) => n * 24 * 60 * 60;
 
+// Create session cookie
 export async function makeSessionCookie(userId: string, secret: string) {
-  const { SignJWT } = await import("jose");
+  const { SignJWT } = await import("jose"); // dynamic import fixes ESM issue
   const token = await new SignJWT({ uid: userId })
     .setProtectedHeader({ alg: ALG })
     .setIssuedAt()
     .setExpirationTime("30d")
     .sign(new TextEncoder().encode(secret));
 
-  return [
+  const cookie = [
     `${COOKIE}=${token}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    `Max-Age=${days(30)}`,
+    "Max-Age=" + days(30),
     "Secure"
   ].join("; ");
+  return cookie;
 }
 
+// Read session cookie
 export async function readSession(req: any, secret: string): Promise<string | null> {
   const raw = (req.headers.cookie || "") as string;
   const dict: Record<string, string> = {};
@@ -31,8 +34,8 @@ export async function readSession(req: any, secret: string): Promise<string | nu
   const token = dict[COOKIE];
   if (!token) return null;
 
+  const { jwtVerify } = await import("jose"); // also dynamic here
   try {
-    const { jwtVerify } = await import("jose");
     const { payload } = await jwtVerify(token, new TextEncoder().encode(secret));
     return (payload as any).uid as string;
   } catch {
@@ -40,6 +43,7 @@ export async function readSession(req: any, secret: string): Promise<string | nu
   }
 }
 
+// Clear session cookie
 export function clearCookie() {
   return `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure`;
 }
